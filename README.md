@@ -1,6 +1,10 @@
 # LLM Gateway
 
-A local HTTP proxy gateway that sits between Claude Code and multiple Anthropic-compatible API providers.
+A local HTTP proxy gateway that sits between Claude Code and multiple Anthropic-compatible API providers. Load-balances across providers, retries failed requests on the next provider, and tracks provider health with automatic cooldown.
+
+## Requirements
+
+- Node.js >= 22
 
 ## Installation
 
@@ -18,7 +22,15 @@ Copy `.env.example` to `.env`:
 cp .env.example .env
 ```
 
-Edit `providers.json` with your API providers:
+### providers.json
+
+`providers.json` is **not committed to the repository** (it contains API keys and is gitignored). You must create it in the project root before starting the gateway:
+
+```bash
+cp providers.example.json providers.json
+```
+
+Then edit it with your real providers. It must be a JSON **array** of provider objects:
 
 ```json
 [
@@ -27,10 +39,34 @@ Edit `providers.json` with your API providers:
     "baseUrl": "https://your-provider.com",
     "apiKey": "sk-xxxxx",
     "enabled": true,
-    "weight": 1
+    "weight": 1,
+    "authStyle": "x-api-key"
+  },
+  {
+    "name": "Bearer Auth Provider",
+    "baseUrl": "https://another-provider.com",
+    "apiKey": "sk-yyyyy",
+    "enabled": true,
+    "weight": 2,
+    "authStyle": "bearer"
   }
 ]
 ```
+
+| Field       | Required | Description                                              |
+|-------------|----------|----------------------------------------------------------|
+| `name`      | yes      | Unique provider name (used in stats and logs)            |
+| `baseUrl`   | yes      | Provider base URL, no trailing slash (request path is appended as-is) |
+| `apiKey`    | yes      | API key injected into upstream requests                  |
+| `enabled`   | yes      | Set `false` to skip this provider                        |
+| `weight`    | yes      | Positive integer, used by the `weighted` strategy        |
+| `authStyle` | no       | `x-api-key` (default, Anthropic-style header) or `bearer` (`Authorization: Bearer <key>`) |
+
+Notes:
+
+- The file is validated on load — a missing required field, an invalid URL, or a non-positive `weight` will fail startup with a validation error.
+- The gateway watches the file and hot-reloads on change, no restart needed. If an edit produces invalid JSON or fails validation, the change is ignored and the previous provider list stays active.
+- The provider must expose an Anthropic-compatible API (e.g. `POST /v1/messages`), since the gateway forwards Claude Code's requests verbatim.
 
 ### Environment Variables
 
@@ -56,6 +92,13 @@ Edit `providers.json` with your API providers:
 
 ```bash
 npm run dev
+```
+
+### Production
+
+```bash
+npm run build
+npm start
 ```
 
 ### Docker
@@ -93,7 +136,7 @@ To update providers at runtime, edit the mounted `providers.json` — the gatewa
 
 ## Adding Providers
 
-Add entries to `providers.json`. The gateway hot-reloads when the file changes — no restart needed.
+Add entries to `providers.json` (see [providers.json](#providersjson) for the format). The gateway hot-reloads when the file changes — no restart needed.
 
 ## Claude Code Setup
 
@@ -116,13 +159,17 @@ Add to `~/.claude/settings.json` or your project's `.claude/settings.json`:
 
 ## Endpoints
 
-| Method | Path        | Description                  |
-|--------|-------------|------------------------------|
-| GET    | `/health`   | Health check                 |
-| GET    | `/stats`    | Request statistics           |
-| GET    | `/providers`| List enabled providers       |
-| ALL    | `/*`        | Proxy to selected provider   |
+| Method | Path        | Description                                          |
+|--------|-------------|------------------------------------------------------|
+| GET    | `/health`   | Health check (`{"status":"ok"}`)                     |
+| GET    | `/stats`    | Totals, per-provider usage, retries, average latency, unhealthy providers |
+| GET    | `/providers`| List enabled provider names                          |
+| ALL    | `/*`        | Proxy to selected provider                           |
 
-## Architecture
+## How It Works
 
-The gateway proxies requests without buffering, preserving streaming responses and SSE.
+- **Provider selection** — each request picks a provider using the configured `STRATEGY`.
+- **Failover** — on network errors or retryable HTTP statuses, the request is retried on the next untried provider until all are exhausted, then a `503` is returned.
+- **Health tracking** — after `HEALTH_FAILURE_THRESHOLD` consecutive failures a provider is marked unhealthy and skipped for `HEALTH_COOLDOWN_MS`.
+- **Streaming** — responses are streamed without buffering, so SSE (Claude streaming) works transparently.
+- **Auth injection** — client auth headers are stripped; each provider's key is injected per its `authStyle`.

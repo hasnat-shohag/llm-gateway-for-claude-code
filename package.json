@@ -1,0 +1,28 @@
+{
+  "name": "llm-gateway",
+  "version": "1.0.0",
+  "description": "Local LLM Gateway for routing requests to Anthropic-compatible providers",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "dev": "node --watch --import tsx src/index.ts",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "fastify": "^5.2.1",
+    "pino": "^9.6.0",
+    "undici": "^7.4.0",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.0",
+    "pino-pretty": "^13.0.0",
+    "tsx": "^4.19.3",
+    "typescript": "^5.7.3"
+  }
+}

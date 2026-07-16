@@ -31,9 +31,22 @@ export function injectAuthHeaders(
 
 export function sanitizeHeaders(headers: Record<string, string>): Record<string, string> {
   const result = { ...headers }
+
+  // Standard hop-by-hop / routing headers
   delete result['host']
   delete result['connection']
   delete result['content-length']
   delete result['transfer-encoding']
+
+  // Strip Stainless SDK telemetry headers injected by the Anthropic SDK / Claude
+  // Code CLI.  These fingerprint the request as coming from Claude Code itself and
+  // can cause Anthropic's policy filters to fire when the request is re-proxied
+  // through a third-party endpoint.
+  for (const key of Object.keys(result)) {
+    if (key.toLowerCase().startsWith('x-stainless-')) {
+      delete result[key]
+    }
+  }
+
   return result
 }

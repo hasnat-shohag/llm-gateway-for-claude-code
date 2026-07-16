@@ -83,6 +83,12 @@ export function createProxyHandler(
           headers['x-api-key'] = provider.apiKey
         }
 
+        // Drop beta-feature flags that third-party providers don't support.
+        // Forwarding unknown beta flags (e.g., interleaved-thinking-2025-05-14)
+        // can cause free/proxy endpoints to return malformed responses or trigger
+        // Anthropic's upstream policy filters.
+        delete headers['anthropic-beta']
+
         // Tell the upstream we accept uncompressed so we never have to deal
         // with decompression ourselves.
         headers['accept-encoding'] = 'identity'

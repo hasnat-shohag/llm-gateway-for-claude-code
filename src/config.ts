@@ -15,7 +15,10 @@ const providerSchema = z.object({
 const envSchema = z.object({
   PORT: z.coerce.number().int().positive().default(8080),
   STRATEGY: z.enum(['random', 'round-robin', 'weighted']).default('random'),
-  REQUEST_TIMEOUT: z.coerce.number().int().positive().default(30000),
+  /** Connect + headers timeout. Raise if providers are slow to respond. */
+  REQUEST_TIMEOUT: z.coerce.number().int().positive().default(60000),
+  /** Body/stream timeout. Must be long enough for large completions. */
+  STREAM_TIMEOUT: z.coerce.number().int().positive().default(300000),
   HEALTH_FAILURE_THRESHOLD: z.coerce.number().int().positive().default(3),
   HEALTH_COOLDOWN_MS: z.coerce.number().int().positive().default(60000),
   LOG_LEVEL: z.string().default('info'),
@@ -27,6 +30,7 @@ export function loadEnvConfig(): GatewayConfig {
     PORT: process.env.PORT,
     STRATEGY: process.env.STRATEGY,
     REQUEST_TIMEOUT: process.env.REQUEST_TIMEOUT,
+    STREAM_TIMEOUT: process.env.STREAM_TIMEOUT,
     HEALTH_FAILURE_THRESHOLD: process.env.HEALTH_FAILURE_THRESHOLD,
     HEALTH_COOLDOWN_MS: process.env.HEALTH_COOLDOWN_MS,
     LOG_LEVEL: process.env.LOG_LEVEL,
@@ -37,6 +41,7 @@ export function loadEnvConfig(): GatewayConfig {
     port: parsed.PORT,
     strategy: parsed.STRATEGY,
     requestTimeout: parsed.REQUEST_TIMEOUT,
+    streamTimeout: parsed.STREAM_TIMEOUT,
     healthFailureThreshold: parsed.HEALTH_FAILURE_THRESHOLD,
     healthCooldownMs: parsed.HEALTH_COOLDOWN_MS,
     logLevel: parsed.LOG_LEVEL,

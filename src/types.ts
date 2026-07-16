@@ -37,7 +37,10 @@ export type StrategyName = 'random' | 'round-robin' | 'weighted'
 export interface GatewayConfig {
   port: number
   strategy: StrategyName
+  /** Timeout (ms) for establishing a connection + receiving response headers. */
   requestTimeout: number
+  /** Timeout (ms) for the full streaming body after headers are received. */
+  streamTimeout: number
   healthFailureThreshold: number
   healthCooldownMs: number
   logLevel: string

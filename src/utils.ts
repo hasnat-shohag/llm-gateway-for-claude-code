@@ -5,7 +5,14 @@ export function generateRequestId(): string {
 }
 
 export function shouldRetry(statusCode: number): boolean {
-  return [429, 500, 502, 503, 504].includes(statusCode)
+  // Standard transient errors + Cloudflare edge errors (520-526, 524).
+  // These are returned as real HTTP status codes when the origin/edge fails.
+  return [
+    429,                    // Too Many Requests
+    500, 502, 503, 504,     // Standard server errors
+    520, 521, 522, 523,     // Cloudflare: unknown/refused/timed-out/unreachable origin
+    524, 525, 526,          // Cloudflare: gateway timeout / SSL handshake / invalid cert
+  ].includes(statusCode)
 }
 
 export function removeAuthHeaders(headers: Record<string, string>): Record<string, string> {

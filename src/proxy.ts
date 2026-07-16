@@ -89,6 +89,13 @@ export function createProxyHandler(
         // Anthropic's upstream policy filters.
         delete headers['anthropic-beta']
 
+        // Inject anthropic-version if the client didn't send it.
+        // Some providers require this header; without it they may return a
+        // silent 200 with an empty or invalid body.
+        if (!headers['anthropic-version']) {
+          headers['anthropic-version'] = '2023-06-01'
+        }
+
         // Tell the upstream we accept uncompressed so we never have to deal
         // with decompression ourselves.
         headers['accept-encoding'] = 'identity'
@@ -100,19 +107,49 @@ export function createProxyHandler(
           headers['content-type'] = 'application/json'
         }
 
-        const controller = new AbortController()
-        const timeout = setTimeout(() => controller.abort(), config.requestTimeout)
-
         const response = await undiciRequest(targetUrl, {
           method,
           headers,
           body,
-          signal: controller.signal,
+          // headersTimeout: time to establish the connection and receive the
+          // first byte of response headers.  Short — if the provider doesn't
+          // respond quickly it's probably down.
+          headersTimeout: config.requestTimeout,
+          // bodyTimeout: time allowed for the streaming body after headers.
+          // Must be long enough to cover large completions.  0 = no timeout.
+          bodyTimeout: config.streamTimeout,
         })
 
-        clearTimeout(timeout)
-
         if (response.statusCode >= 200 && response.statusCode < 300) {
+          // Guard 1: content-type check.
+          // Some providers (via Cloudflare) return HTML error pages with a 200
+          // status.  Claude Code cannot parse HTML as an SSE stream and reports
+          // "empty or malformed response".  Detect and retry.
+          const ct = (response.headers['content-type'] as string | undefined) ?? ''
+          if (ct.includes('text/html')) {
+            healthTracker.recordFailure(provider.name)
+            lastStatusCode = response.statusCode
+            retryCount++
+            log.warn({ requestId, provider: provider.name, contentType: ct },
+              'provider returned HTML at 200 — retrying next provider')
+            await response.body.dump()
+            continue
+          }
+
+          // Guard 2: empty-body check.
+          // Some providers quietly exhaust their quota and reply 200 with an
+          // empty body (content-length: 0).  Detect and retry.
+          const cl = response.headers['content-length']
+          if (cl !== undefined && cl !== null && Number(cl) === 0) {
+            healthTracker.recordFailure(provider.name)
+            lastStatusCode = response.statusCode
+            retryCount++
+            log.warn({ requestId, provider: provider.name },
+              'provider returned 200 with empty body — retrying next provider')
+            await response.body.dump()
+            continue
+          }
+
           healthTracker.recordSuccess(provider.name)
           const latency = Date.now() - startTime
           if (stats) {

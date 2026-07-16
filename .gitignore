@@ -3,3 +3,8 @@ docs
 dist
 providers.json
 .env
+
+# SQLite usage database (runtime-generated, use /usage/export for backups)
+usage.db
+usage.db-wal
+usage.db-shm

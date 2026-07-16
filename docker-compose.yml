@@ -10,6 +10,7 @@ services:
       - .env
     environment:
       NODE_ENV: development
+      USAGE_DB_PATH: /app/data/usage.db
     ports:
       - "${PORT:-8080}:8080"
     volumes:
@@ -20,6 +21,8 @@ services:
       - ./package.json:/app/package.json
       # Keep the image's node_modules; don't let an empty host dir shadow it.
       - /app/node_modules
+      # Persist usage.db across container restarts
+      - usage-data:/app/data
     restart: unless-stopped
 
   # Production: immutable build, no bind mounts. Enable with:
@@ -39,4 +42,12 @@ services:
     volumes:
       # Mount providers.json read-only so it can still be hot-reloaded on edit.
       - ./providers.json:/app/providers.json:ro
+      # Persist usage.db across container restarts and redeployments
+      - usage-data:/app/data
     restart: unless-stopped
+
+volumes:
+  # Named volume for SQLite usage database — survives container restarts/rebuilds.
+  # Inspect with: docker volume inspect llm-gateway_usage-data
+  usage-data:
+

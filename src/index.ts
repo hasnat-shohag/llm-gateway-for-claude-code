@@ -4,6 +4,7 @@ import { createLogger } from './logger.js'
 import { HealthTracker } from './health.js'
 import type { ProviderConfig } from './types.js'
 import { loadEnvConfig, loadProviders, watchProviders } from './config.js'
+import { UsageTracker } from './usage-tracker.js'
 
 const config = loadEnvConfig()
 const log = createLogger(config.logLevel, config.nodeEnv)
@@ -16,8 +17,14 @@ try {
   process.exit(1)
 }
 const healthTracker = new HealthTracker(config.healthFailureThreshold, config.healthCooldownMs)
+const usageTracker = new UsageTracker()
 
-const { app } = createServer(config, providers, healthTracker)
+const { app } = createServer(config, providers, healthTracker, usageTracker)
+
+// Gracefully close the SQLite connection on exit
+process.on('exit', () => usageTracker.close())
+process.on('SIGINT',  () => { usageTracker.close(); process.exit(0) })
+process.on('SIGTERM', () => { usageTracker.close(); process.exit(0) })
 
 watchProviders('providers.json', (newProviders) => {
   providers = newProviders

@@ -1,10 +1,12 @@
 import type { FastifyRequest, FastifyReply } from 'fastify'
-import { request as undiciRequest } from 'undici'
+ import { request as undiciRequest } from 'undici'
+import { Transform } from 'stream'
 import { ProviderManager } from './provider-manager.js'
 import { HealthTracker } from './health.js'
 import type { GatewayConfig, RequestStats } from './types.js'
 import { generateRequestId, shouldRetry, removeAuthHeaders, sanitizeHeaders } from './utils.js'
 import { createLogger } from './logger.js'
+import { UsageTracker, calculateCost } from './usage-tracker.js'
 
 /**
  * Forward upstream response headers to the Fastify reply.
@@ -36,11 +38,113 @@ function forwardHeaders(
   }
 }
 
+// ---------------------------------------------------------------------------
+// SSE stream interceptor
+// ---------------------------------------------------------------------------
+// Creates a Transform stream that passes every byte through to the client
+// unchanged while scanning for the two SSE events that carry token usage:
+//   - message_start  → input_tokens, model
+//   - message_delta  → output_tokens (in the top-level usage object)
+// After the stream ends (or errors) the collected data is persisted via
+// UsageTracker.record().
+// ---------------------------------------------------------------------------
+function createUsageInterceptor(
+  provider: string,
+  usageTracker: UsageTracker,
+  log: ReturnType<typeof createLogger>
+): Transform {
+  let inputTokens = 0
+  let outputTokens = 0
+  let cacheReadTokens = 0
+  let cacheWriteTokens = 0
+  let model = 'unknown'
+  // Buffer incomplete SSE lines across chunk boundaries
+  let lineBuffer = ''
+
+  const flush = () => {
+    if (inputTokens === 0 && outputTokens === 0) return   // nothing to record
+    try {
+      const now = new Date()
+      const costUsd = calculateCost(model, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens)
+      usageTracker.record({
+        timestamp:        now.toISOString(),
+        date:             now.toISOString().slice(0, 10),
+        provider,
+        model,
+        inputTokens,
+        outputTokens,
+        cacheReadTokens,
+        cacheWriteTokens,
+        costUsd,
+      })
+      log.info({ provider, model, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, costUsd },
+        'usage recorded')
+    } catch (err) {
+      log.warn({ err }, 'failed to record usage')
+    }
+  }
+
+  const parseLine = (line: string) => {
+    // SSE data lines start with 'data: '
+    if (!line.startsWith('data: ')) return
+    const raw = line.slice(6).trim()
+    if (raw === '[DONE]') return
+    try {
+      const obj = JSON.parse(raw) as Record<string, unknown>
+      if (obj.type === 'message_start') {
+        const msg = obj.message as Record<string, unknown> | undefined
+        if (msg?.model) model = String(msg.model)
+        const usage = msg?.usage as Record<string, number> | undefined
+        if (usage) {
+          inputTokens       += usage.input_tokens                ?? 0
+          cacheReadTokens   += usage.cache_read_input_tokens     ?? 0
+          cacheWriteTokens  += usage.cache_creation_input_tokens ?? 0
+        }
+      } else if (obj.type === 'message_delta') {
+        const usage = obj.usage as Record<string, number> | undefined
+        if (usage) {
+          outputTokens += usage.output_tokens ?? 0
+        }
+      }
+    } catch {
+      // Non-JSON data line — skip
+    }
+  }
+
+  const transform = new Transform({
+    transform(chunk: Buffer, _encoding, callback) {
+      // Pass chunk through to client immediately
+      this.push(chunk)
+      // Parse lines from the chunk (handle partial lines across chunks)
+      const text = lineBuffer + chunk.toString('utf8')
+      const lines = text.split('\n')
+      // The last element may be an incomplete line — keep it in the buffer
+      lineBuffer = lines.pop() ?? ''
+      for (const line of lines) {
+        parseLine(line.replace(/\r$/, ''))
+      }
+      callback()
+    },
+    flush(callback) {
+      // Process any remaining buffered content
+      if (lineBuffer) parseLine(lineBuffer.replace(/\r$/, ''))
+      flush()
+      callback()
+    },
+  })
+
+  // Also catch stream errors so tokens are still saved on abrupt close
+  transform.on('error', () => flush())
+
+  return transform
+}
+
 export function createProxyHandler(
   providerManager: ProviderManager,
   healthTracker: HealthTracker,
   config: GatewayConfig,
-  stats?: RequestStats
+  stats?: RequestStats,
+  usageTracker?: UsageTracker
 ) {
   const log = createLogger(config.logLevel, config.nodeEnv)
 
@@ -171,12 +275,15 @@ export function createProxyHandler(
           reply.code(response.statusCode)
           forwardHeaders(reply, response.headers)
 
-          // reply.send() with a Readable stream is the correct Fastify way to
-          // stream a body — it writes the HTTP head (status + headers) first,
-          // then pipes the body.  Do NOT use reply.hijack() here: hijack skips
-          // Fastify's head-writing path, so the status line and headers set
-          // above are never sent, and the client receives an empty/malformed
-          // response.
+          // Wrap the body in a usage-intercepting Transform if the response
+          // looks like an SSE stream (text/event-stream).  For all other
+          // content types (e.g. plain JSON) pipe through unchanged — we can
+          // add JSON-mode parsing later if needed.
+          if (usageTracker && ct.includes('text/event-stream')) {
+            const interceptor = createUsageInterceptor(provider.name, usageTracker, log)
+            return reply.send(response.body.pipe(interceptor))
+          }
+
           return reply.send(response.body)
         }
 

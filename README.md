@@ -75,10 +75,12 @@ Notes:
 | `PORT`                    | `8080`    | Server port                      |
 | `STRATEGY`                | `random`  | Provider selection strategy      |
 | `REQUEST_TIMEOUT`         | `30000`   | Request timeout in ms            |
+| `STREAM_TIMEOUT`          | `300000`  | Streaming body timeout in ms     |
 | `HEALTH_FAILURE_THRESHOLD`| `3`       | Consecutive failures to mark unhealthy |
 | `HEALTH_COOLDOWN_MS`      | `60000`   | Cooldown period in ms            |
 | `LOG_LEVEL`               | `info`    | Pino log level                   |
 | `NODE_ENV`                | `development` | Environment mode             |
+| `USAGE_DB_PATH`           | `./usage.db` | Path to the SQLite usage database |
 
 ### Provider Selection Strategies
 
@@ -103,33 +105,33 @@ npm start
 
 ### Docker
 
-Build the image:
+**Recommended: use Docker Compose** (handles build tools, volumes, and restart policy automatically):
 
 ```bash
-docker build -t llm-gateway .
+# Development (live-reload, source bind-mounted)
+docker compose up -d --build
+
+# Production
+docker compose --profile prod up -d --build
 ```
 
-Run the container (mount `providers.json` from host):
+> **Upgrading the image?** If you're upgrading from an older image that didn't install `better-sqlite3`, the container's `node_modules` anonymous volume may be stale. Run this once to wipe it and start fresh:
+> ```bash
+> docker compose down -v && docker compose up -d
+> ```
+> The `usage-data` named volume (your token history) is preserved — only the `node_modules` anonymous volume is removed.
+
+**Manual `docker run`** (if not using Compose):
 
 ```bash
+docker build --target dev -t llm-gateway:dev .
 docker run -d \
   --name llm-gateway \
   -p 8080:8080 \
   -v $(pwd)/providers.json:/app/providers.json \
-  -e STRATEGY=round-robin \
-  -e LOG_LEVEL=info \
-  llm-gateway
-```
-
-Environment variables can be set via `-e` flags or an env file:
-
-```bash
-docker run -d \
-  --name llm-gateway \
-  -p 8080:8080 \
-  -v $(pwd)/providers.json:/app/providers.json \
+  -v llm-gateway-usage:/app/data \
   --env-file .env \
-  llm-gateway
+  llm-gateway:dev
 ```
 
 To update providers at runtime, edit the mounted `providers.json` — the gateway hot-reloads automatically without a container restart.
@@ -159,12 +161,17 @@ Add to `~/.claude/settings.json` or your project's `.claude/settings.json`:
 
 ## Endpoints
 
-| Method | Path        | Description                                          |
-|--------|-------------|------------------------------------------------------|
-| GET    | `/health`   | Health check (`{"status":"ok"}`)                     |
-| GET    | `/stats`    | Totals, per-provider usage, retries, average latency, unhealthy providers |
-| GET    | `/providers`| List enabled provider names                          |
-| ALL    | `/*`        | Proxy to selected provider                           |
+| Method | Path                  | Description                                              |
+|--------|-----------------------|----------------------------------------------------------|
+| GET    | `/health`             | Health check (`{"status":"ok"}`)                         |
+| GET    | `/stats`              | Totals, per-provider usage, retries, average latency, unhealthy providers |
+| GET    | `/providers`          | List enabled provider names                              |
+| GET    | `/usage`              | Token usage & cost summary for today + recent calls + day history |
+| GET    | `/usage?date=YYYY-MM-DD` | Usage for a specific date                             |
+| GET    | `/usage?limit=100`    | Adjust number of recent calls returned (default 50)      |
+| GET    | `/usage/export`       | Download today's usage as CSV                            |
+| GET    | `/usage/export?date=YYYY-MM-DD` | Download a specific day's usage as CSV        |
+| ALL    | `/*`                  | Proxy to selected provider                               |
 
 ## How It Works
 
@@ -173,3 +180,83 @@ Add to `~/.claude/settings.json` or your project's `.claude/settings.json`:
 - **Health tracking** — after `HEALTH_FAILURE_THRESHOLD` consecutive failures a provider is marked unhealthy and skipped for `HEALTH_COOLDOWN_MS`.
 - **Streaming** — responses are streamed without buffering, so SSE (Claude streaming) works transparently.
 - **Auth injection** — client auth headers are stripped; each provider's key is injected per its `authStyle`.
+- **Token tracking** — SSE responses are transparently intercepted to extract token counts and cost, persisted to a local SQLite database.
+
+## Token Usage & Cost Tracking
+
+The gateway automatically intercepts every streaming response and extracts token usage reported by the upstream provider. Data is stored in a local SQLite file (`usage.db` by default, or `USAGE_DB_PATH` in `.env`).
+
+### Check today's usage
+
+```bash
+curl http://localhost:8080/usage | python3 -m json.tool
+```
+
+Example response:
+
+```json
+{
+  "today": {
+    "date": "2026-07-17",
+    "totalCalls": 12,
+    "totalInputTokens": 48200,
+    "totalOutputTokens": 9400,
+    "totalCacheReadTokens": 12000,
+    "totalCacheWriteTokens": 0,
+    "totalCostUsd": 0.285,
+    "byProvider": [
+      {
+        "provider": "Agent Router 1",
+        "calls": 8,
+        "inputTokens": 32000,
+        "outputTokens": 6200,
+        "cacheReadTokens": 12000,
+        "cacheWriteTokens": 0,
+        "costUsd": 0.19
+      }
+    ]
+  },
+  "recentCalls": [ ... ],
+  "history": [
+    { "date": "2026-07-17", "totalCalls": 12, "totalCostUsd": 0.285 },
+    { "date": "2026-07-16", "totalCalls": 35, "totalCostUsd": 0.812 }
+  ]
+}
+```
+
+### Export to CSV
+
+```bash
+# Today
+curl http://localhost:8080/usage/export -o usage-today.csv
+
+# Specific date
+curl "http://localhost:8080/usage/export?date=2026-07-16" -o usage-2026-07-16.csv
+```
+
+### Pricing table
+
+Costs are calculated using Anthropic's public pricing (USD per 1M tokens):
+
+| Model prefix          | Input   | Output   | Cache Read | Cache Write |
+|-----------------------|---------|----------|------------|-------------|
+| `claude-opus-4`       | $15.00  | $75.00   | $1.50      | $18.75      |
+| `claude-sonnet-4`     | $3.00   | $15.00   | $0.30      | $3.75       |
+| `claude-haiku-3-5`    | $0.80   | $4.00    | $0.08      | $1.00       |
+| `claude-haiku-3`      | $0.25   | $1.25    | $0.03      | $0.30       |
+
+To update prices, edit `PRICING` in `src/usage-tracker.ts`.
+
+### Docker — persisting usage.db
+
+When running via Docker Compose, the SQLite database is stored in a named volume (`usage-data`) so it survives container restarts and image rebuilds. The database path inside the container is `/app/data/usage.db`.
+
+To inspect the volume or back it up:
+
+```bash
+# Where Docker stores the volume on disk
+docker volume inspect llm-gateway_usage-data
+
+# Copy the database out of the container
+docker cp llm-gateway-gateway-dev-1:/app/data/usage.db ./usage-backup.db
+```

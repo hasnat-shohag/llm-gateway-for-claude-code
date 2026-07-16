@@ -4,11 +4,13 @@ import { ProviderManager } from './provider-manager.js'
 import { HealthTracker } from './health.js'
 import { createProxyHandler } from './proxy.js'
 import { createLogger } from './logger.js'
+import { UsageTracker } from './usage-tracker.js'
 
 export function createServer(
   config: GatewayConfig,
   providers: ProviderConfig[],
-  healthTracker: HealthTracker
+  healthTracker: HealthTracker,
+  usageTracker: UsageTracker
 ) {
   const log = createLogger(config.logLevel, config.nodeEnv)
   const providerManager = new ProviderManager(providers, healthTracker, config.strategy)
@@ -53,7 +55,31 @@ export function createServer(
     return providerManager.getProviderNames()
   })
 
-  app.all('/*', createProxyHandler(providerManager, healthTracker, config, stats))
+  // -------------------------------------------------------------------------
+  // Usage / token tracking endpoints
+  // -------------------------------------------------------------------------
+
+  app.get('/usage', async (req) => {
+    const date = (req.query as Record<string, string | undefined>).date
+    const limit = Number((req.query as Record<string, string | undefined>).limit ?? 50)
+    return {
+      today:       usageTracker.getDailySummary(date),
+      recentCalls: usageTracker.getRecentCalls(limit),
+      history:     usageTracker.getAllDays(),
+    }
+  })
+
+  app.get('/usage/export', async (req, reply) => {
+    const date = (req.query as Record<string, string | undefined>).date
+    const targetDate = date ?? new Date().toISOString().slice(0, 10)
+    const csv = usageTracker.exportCsv(targetDate)
+    reply
+      .header('Content-Type', 'text/csv; charset=utf-8')
+      .header('Content-Disposition', `attachment; filename="usage-${targetDate}.csv"`)
+    return reply.send(csv)
+  })
+
+  app.all('/*', createProxyHandler(providerManager, healthTracker, config, stats, usageTracker))
 
   app.setNotFoundHandler((_req, reply) => {
     reply.code(404).send({ error: 'not found' })

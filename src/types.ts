@@ -27,6 +27,41 @@ export interface RequestStats {
   latencies: number[]
 }
 
+/** A single completed API call record stored in SQLite */
+export interface UsageRecord {
+  id?: number
+  timestamp: string        // ISO-8601
+  date: string             // YYYY-MM-DD
+  provider: string
+  model: string
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
+  costUsd: number
+}
+
+export interface ProviderDailyStats {
+  provider: string
+  calls: number
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
+  costUsd: number
+}
+
+export interface DailySummary {
+  date: string
+  totalCalls: number
+  totalInputTokens: number
+  totalOutputTokens: number
+  totalCacheReadTokens: number
+  totalCacheWriteTokens: number
+  totalCostUsd: number
+  byProvider: ProviderDailyStats[]
+}
+
 export interface StrategyType {
   name: string
   select(providers: ProviderConfig[]): ProviderConfig | null

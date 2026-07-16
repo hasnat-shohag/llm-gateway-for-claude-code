@@ -6,8 +6,9 @@ export function generateRequestId(): string {
 
 export function shouldRetry(statusCode: number): boolean {
   // Standard transient errors + Cloudflare edge errors (520-526, 524).
-  // These are returned as real HTTP status codes when the origin/edge fails.
+  // Also retry on provider auth/rate-limiting/model errors (400, 401, 403) so we fail over to other keys.
   return [
+    400, 401, 403,          // Client errors (bad key, rate limits, unsupported models)
     429,                    // Too Many Requests
     500, 502, 503, 504,     // Standard server errors
     520, 521, 522, 523,     // Cloudflare: unknown/refused/timed-out/unreachable origin

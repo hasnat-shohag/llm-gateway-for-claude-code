@@ -12,10 +12,9 @@ import { createLogger } from './logger.js'
  * Rules:
  *  - Skip hop-by-hop headers (transfer-encoding, connection, keep-alive).
  *  - Skip content-length — we stream the body so the length may differ.
- *  - Skip content-encoding — we tell undici to decompress, so we MUST NOT
- *    forward the original encoding header or the client will try to decompress
- *    already-decompressed bytes and get garbage (causing the "empty/malformed
- *    response" error in Claude CLI).
+ *  - DO NOT strip content-encoding — undici does not decompress the body stream
+ *    for us (it's forwarded raw/untouched), so we MUST preserve the encoding
+ *    header so the client (e.g., Claude CLI) knows how to decompress it.
  */
 function forwardHeaders(
   reply: FastifyReply,
@@ -28,7 +27,6 @@ function forwardHeaders(
     'server',
     'x-powered-by',
     'content-length',
-    'content-encoding', // must strip — undici decompresses for us
   ])
 
   for (const [key, value] of Object.entries(headers)) {

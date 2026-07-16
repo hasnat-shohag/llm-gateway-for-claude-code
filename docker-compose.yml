@@ -1,0 +1,42 @@
+services:
+  # Development: source is bind-mounted and node --watch / providers.json
+  # hot-reload picks up local changes without rebuilding the image.
+  gateway-dev:
+    build:
+      context: .
+      target: dev
+    image: llm-gateway:dev
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: development
+    ports:
+      - "${PORT:-8080}:8080"
+    volumes:
+      # Live-mount code + config so local edits reflect in the container.
+      - ./src:/app/src
+      - ./providers.json:/app/providers.json
+      - ./tsconfig.json:/app/tsconfig.json
+      - ./package.json:/app/package.json
+      # Keep the image's node_modules; don't let an empty host dir shadow it.
+      - /app/node_modules
+    restart: unless-stopped
+
+  # Production: immutable build, no bind mounts. Enable with:
+  #   docker compose --profile prod up gateway
+  gateway:
+    build:
+      context: .
+      target: production
+    image: llm-gateway:latest
+    profiles: ["prod"]
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+    ports:
+      - "${PORT:-8080}:8080"
+    volumes:
+      # Mount providers.json read-only so it can still be hot-reloaded on edit.
+      - ./providers.json:/app/providers.json:ro
+    restart: unless-stopped

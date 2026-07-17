@@ -79,6 +79,20 @@ export function createServer(
     return reply.send(csv)
   })
 
+  /**
+   * GET /usage/cost            → cost for today
+   * GET /usage/cost?date=YYYY-MM-DD → cost for a specific date
+   * GET /usage/cost/YYYY-MM-DD → cost for a specific date (path-param style)
+   */
+  app.get('/usage/cost', async (req) => {
+    const date = (req.query as Record<string, string | undefined>).date
+    return usageTracker.getDailyCost(date)
+  })
+
+  app.get<{ Params: { date: string } }>('/usage/cost/:date', async (req) => {
+    return usageTracker.getDailyCost(req.params.date)
+  })
+
   app.all('/*', createProxyHandler(providerManager, healthTracker, config, stats, usageTracker))
 
   app.setNotFoundHandler((_req, reply) => {

@@ -169,6 +169,9 @@ Add to `~/.claude/settings.json` or your project's `.claude/settings.json`:
 | GET    | `/usage`              | Token usage & cost summary for today + recent calls + day history |
 | GET    | `/usage?date=YYYY-MM-DD` | Usage for a specific date                             |
 | GET    | `/usage?limit=100`    | Adjust number of recent calls returned (default 50)      |
+| GET    | `/usage/cost`         | API consumption cost summary for today                    |
+| GET    | `/usage/cost?date=YYYY-MM-DD` | Cost summary for a specific date (query param)    |
+| GET    | `/usage/cost/:date`   | Cost summary for a specific date (path param)            |
 | GET    | `/usage/export`       | Download today's usage as CSV                            |
 | GET    | `/usage/export?date=YYYY-MM-DD` | Download a specific day's usage as CSV        |
 | ALL    | `/*`                  | Proxy to selected provider                               |
@@ -232,6 +235,55 @@ curl http://localhost:8080/usage/export -o usage-today.csv
 
 # Specific date
 curl "http://localhost:8080/usage/export?date=2026-07-16" -o usage-2026-07-16.csv
+```
+
+### Check API consumption cost
+
+You can retrieve a lightweight summary of your API consumption costs (without the full list of token counts or recent calls). 
+
+```bash
+# Today's cost summary
+curl http://localhost:8080/usage/cost | python3 -m json.tool
+
+# Specific day's cost summary (supports both query parameters and path parameters)
+curl http://localhost:8080/usage/cost/2026-07-16 | python3 -m json.tool
+curl "http://localhost:8080/usage/cost?date=2026-07-16" | python3 -m json.tool
+```
+
+Example response:
+
+```json
+{
+  "date": "2026-07-17",
+  "totalCalls": 12,
+  "totalCostUsd": 0.285,
+  "byProvider": [
+    {
+      "provider": "Agent Router 1",
+      "calls": 8,
+      "costUsd": 0.19
+    },
+    {
+      "provider": "anthropic",
+      "calls": 4,
+      "costUsd": 0.095
+    }
+  ],
+  "byModel": [
+    {
+      "model": "claude-sonnet-3-5",
+      "provider": "Agent Router 1",
+      "calls": 8,
+      "costUsd": 0.19
+    },
+    {
+      "model": "claude-haiku-3-5",
+      "provider": "anthropic",
+      "calls": 4,
+      "costUsd": 0.095
+    }
+  ]
+}
 ```
 
 ### Pricing table

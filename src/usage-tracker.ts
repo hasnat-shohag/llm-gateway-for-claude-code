@@ -197,6 +197,59 @@ export class UsageTracker {
     return [header, ...lines].join('\n')
   }
 
+  /**
+   * Focused cost summary for a single calendar date (default: today).
+   * Returns total cost + per-provider and per-model breakdowns.
+   */
+  getDailyCost(date?: string): {
+    date: string
+    totalCalls: number
+    totalCostUsd: number
+    byProvider: Array<{ provider: string; calls: number; costUsd: number }>
+    byModel: Array<{ model: string; provider: string; calls: number; costUsd: number }>
+  } {
+    const targetDate = date ?? todayUTC()
+
+    const totals = this.db.prepare(`
+      SELECT
+        COUNT(*)      AS totalCalls,
+        SUM(cost_usd) AS totalCostUsd
+      FROM api_calls
+      WHERE date = ?
+    `).get(targetDate) as Record<string, number>
+
+    const byProvider = this.db.prepare(`
+      SELECT
+        provider,
+        COUNT(*)      AS calls,
+        SUM(cost_usd) AS costUsd
+      FROM api_calls
+      WHERE date = ?
+      GROUP BY provider
+      ORDER BY costUsd DESC
+    `).all(targetDate) as Array<{ provider: string; calls: number; costUsd: number }>
+
+    const byModel = this.db.prepare(`
+      SELECT
+        model,
+        provider,
+        COUNT(*)      AS calls,
+        SUM(cost_usd) AS costUsd
+      FROM api_calls
+      WHERE date = ?
+      GROUP BY model, provider
+      ORDER BY costUsd DESC
+    `).all(targetDate) as Array<{ model: string; provider: string; calls: number; costUsd: number }>
+
+    return {
+      date: targetDate,
+      totalCalls:    totals.totalCalls    ?? 0,
+      totalCostUsd:  round6(totals.totalCostUsd ?? 0),
+      byProvider:    byProvider.map(p => ({ ...p, costUsd: round6(p.costUsd) })),
+      byModel:       byModel.map(m => ({ ...m, costUsd: round6(m.costUsd) })),
+    }
+  }
+
   close(): void {
     this.db.close()
   }

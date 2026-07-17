@@ -1,12 +1,66 @@
 import type { FastifyRequest, FastifyReply } from 'fastify'
- import { request as undiciRequest } from 'undici'
-import { Transform } from 'stream'
+import { request as undiciRequest, Agent } from 'undici'
+import { Transform, Readable } from 'stream'
 import { ProviderManager } from './provider-manager.js'
 import { HealthTracker } from './health.js'
 import type { GatewayConfig, RequestStats } from './types.js'
 import { generateRequestId, shouldRetry, removeAuthHeaders, sanitizeHeaders } from './utils.js'
 import { createLogger } from './logger.js'
 import { UsageTracker, calculateCost } from './usage-tracker.js'
+
+// ---------------------------------------------------------------------------
+// Shared undici connection pool
+// ---------------------------------------------------------------------------
+// The default global undici dispatcher caps concurrent connections per origin
+// low, so several Claude Code sessions hitting the gateway at once queue behind
+// one another and can trip body timeouts.  A dedicated Agent with a higher
+// per-origin connection count keeps concurrent requests from starving.
+const dispatcher = new Agent({
+  connections: 64,
+  pipelining: 0,
+})
+
+/**
+ * Read the first chunk of an undici body stream, then return a fresh Readable
+ * that replays that chunk followed by the rest of the stream.  Lets us inspect
+ * whether a 200 response actually carries a body before committing status +
+ * headers to the client (so we can still fail over on an empty/aborted stream).
+ *
+ * Returns `{ empty: true }` when the stream ends with no bytes.
+ */
+async function peekBody(
+  body: Readable
+): Promise<{ empty: true } | { empty: false; firstChunk: Buffer; stream: Readable }> {
+  const iterator = body[Symbol.asyncIterator]()
+  let first: IteratorResult<Buffer>
+  try {
+    first = await iterator.next()
+  } catch {
+    // Stream errored before yielding anything — treat as empty so we fail over.
+    body.destroy()
+    return { empty: true }
+  }
+
+  if (first.done || !first.value || first.value.length === 0) {
+    return { empty: true }
+  }
+
+  const firstChunk = first.value
+  const replay = Readable.from(
+    (async function* () {
+      yield firstChunk
+      while (true) {
+        const next = await iterator.next()
+        if (next.done) return
+        yield next.value
+      }
+    })()
+  )
+  // Propagate downstream errors so callers/pipe consumers see the abort.
+  body.on('error', (err) => replay.destroy(err))
+
+  return { empty: false, firstChunk, stream: replay }
+}
 
 /**
  * Forward upstream response headers to the Fastify reply.
@@ -213,6 +267,7 @@ export function createProxyHandler(
           method,
           headers,
           body,
+          dispatcher,
           // headersTimeout: time to establish the connection and receive the
           // first byte of response headers.  Short — if the provider doesn't
           // respond quickly it's probably down.
@@ -238,17 +293,36 @@ export function createProxyHandler(
             continue
           }
 
-          // Guard 2: empty-body check.
+          // Guard 2: peek the body before committing status + headers.
           // Some providers quietly exhaust their quota and reply 200 with an
-          // empty body (content-length: 0).  Detect and retry.
-          const cl = response.headers['content-length']
-          if (cl !== undefined && cl !== null && Number(cl) === 0) {
+          // empty body, or drop the connection before the first byte.  A
+          // content-length check alone misses chunked SSE streams (no
+          // content-length header), so read the first chunk and only commit
+          // the response to the client once we know real bytes exist.
+          const peeked = await peekBody(response.body as unknown as Readable)
+          if (peeked.empty) {
             healthTracker.recordFailure(provider.name)
             lastStatusCode = response.statusCode
             retryCount++
             log.warn({ requestId, provider: provider.name },
-              'provider returned 200 with empty body — retrying next provider')
-            await response.body.dump()
+              'provider returned 200 with empty/aborted body — retrying next provider')
+            continue
+          }
+
+          // Guard 3: first-bytes sniff.
+          // Cloudflare error pages sometimes arrive with a JSON/SSE
+          // content-type, so also check the leading bytes.  A valid Anthropic
+          // response starts with '{' (JSON mode) or an SSE field name
+          // ("event:"/"data:").  '<' means HTML regardless of the header.
+          const head = peeked.firstChunk.toString('utf8', 0, Math.min(64, peeked.firstChunk.length)).trimStart()
+          if (head.startsWith('<')) {
+            healthTracker.recordFailure(provider.name)
+            lastStatusCode = response.statusCode
+            retryCount++
+            log.warn({ requestId, provider: provider.name, head: head.slice(0, 40) },
+              'provider returned HTML body at 200 — retrying next provider')
+            peeked.stream.destroy()
+            ;(response.body as unknown as Readable).destroy()
             continue
           }
 
@@ -281,10 +355,10 @@ export function createProxyHandler(
           // add JSON-mode parsing later if needed.
           if (usageTracker && ct.includes('text/event-stream')) {
             const interceptor = createUsageInterceptor(provider.name, usageTracker, log)
-            return reply.send(response.body.pipe(interceptor))
+            return reply.send(peeked.stream.pipe(interceptor))
           }
 
-          return reply.send(response.body)
+          return reply.send(peeked.stream)
         }
 
         if (shouldRetry(response.statusCode)) {

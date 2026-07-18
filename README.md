@@ -288,16 +288,23 @@ Example response:
 
 ### Pricing table
 
-Costs are calculated using Anthropic's public pricing (USD per 1M tokens):
+Costs are calculated using Anthropic's [official pricing](https://platform.claude.com/docs/en/about-claude/pricing) (USD per 1M tokens). Cache reads bill at 0.1x base input; cache writes at 1.25x base input (5-minute TTL, the API default — 1-hour TTL writes bill at 2x but are not distinguishable from the usage payload, so 5m rates are assumed):
 
-| Model prefix          | Input   | Output   | Cache Read | Cache Write |
-|-----------------------|---------|----------|------------|-------------|
-| `claude-opus-4`       | $15.00  | $75.00   | $1.50      | $18.75      |
-| `claude-sonnet-4`     | $3.00   | $15.00   | $0.30      | $3.75       |
-| `claude-haiku-3-5`    | $0.80   | $4.00    | $0.08      | $1.00       |
-| `claude-haiku-3`      | $0.25   | $1.25    | $0.03      | $0.30       |
+| Model prefix          | Input   | Output   | Cache Read | Cache Write (5m) |
+|-----------------------|---------|----------|------------|------------------|
+| `claude-fable-5`      | $10.00  | $50.00   | $1.00      | $12.50           |
+| `claude-mythos-5`     | $10.00  | $50.00   | $1.00      | $12.50           |
+| `claude-opus-4-5` … `claude-opus-4-8` | $5.00 | $25.00 | $0.50 | $6.25    |
+| `claude-opus-4` (4.0/4.1), `claude-opus-3` | $15.00 | $75.00 | $1.50 | $18.75 |
+| `claude-sonnet-5`     | $2.00¹  | $10.00¹  | $0.20¹     | $2.50¹           |
+| `claude-sonnet-4`     | $3.00   | $15.00   | $0.30      | $3.75            |
+| `claude-haiku-4-5`    | $1.00   | $5.00    | $0.10      | $1.25            |
+| `claude-haiku-3-5`    | $0.80   | $4.00    | $0.08      | $1.00            |
+| `claude-haiku-3`      | $0.25   | $1.25    | $0.03      | $0.30            |
 
-To update prices, edit `PRICING` in `src/usage-tracker.ts`.
+¹ Sonnet 5 introductory pricing through 2026-08-31; standard pricing ($3.00 / $15.00 / $0.30 / $3.75) takes effect 2026-09-01.
+
+Model names are prefix-matched; unknown models fall back to Sonnet-tier standard pricing. To update prices, edit `PRICING` in `src/usage-tracker.ts`.
 
 ### Docker — persisting usage.db
 

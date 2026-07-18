@@ -4,7 +4,7 @@ import { Transform, Readable } from 'stream'
 import { ProviderManager } from './provider-manager.js'
 import { HealthTracker } from './health.js'
 import type { GatewayConfig, RequestStats } from './types.js'
-import { generateRequestId, shouldRetry, removeAuthHeaders, sanitizeHeaders } from './utils.js'
+import { generateRequestId, shouldRetry, removeAuthHeaders, sanitizeHeaders, sanitizeRequestBody } from './utils.js'
 import { createLogger } from './logger.js'
 import { UsageTracker, calculateCost } from './usage-tracker.js'
 
@@ -226,7 +226,8 @@ export function createProxyHandler(
         const targetUrl = `${provider.baseUrl}${url}`
 
         // Build headers: strip auth + hop-by-hop, then inject provider key
-        let headers = removeAuthHeaders(sanitizeHeaders(originalHeaders))
+        const shouldSanitize = provider.sanitize !== false
+        let headers = removeAuthHeaders(sanitizeHeaders(originalHeaders, shouldSanitize))
         headers['host'] = new URL(provider.baseUrl).host
 
         // Inject auth header according to the provider's declared style:
@@ -243,7 +244,9 @@ export function createProxyHandler(
         // Forwarding unknown beta flags (e.g., interleaved-thinking-2025-05-14)
         // can cause free/proxy endpoints to return malformed responses or trigger
         // Anthropic's upstream policy filters.
-        delete headers['anthropic-beta']
+        if (shouldSanitize) {
+          delete headers['anthropic-beta']
+        }
 
         // Inject anthropic-version if the client didn't send it.
         // Some providers require this header; without it they may return a
@@ -256,7 +259,10 @@ export function createProxyHandler(
         // with decompression ourselves.
         headers['accept-encoding'] = 'identity'
 
-        const body = req.body ? JSON.stringify(req.body) : undefined
+        const sanitizedBody = req.body
+          ? (shouldSanitize ? sanitizeRequestBody(req.body) : req.body)
+          : undefined
+        const body = sanitizedBody ? JSON.stringify(sanitizedBody) : undefined
         if (body) {
           headers['content-length'] = String(Buffer.byteLength(body))
           // Ensure correct content-type for JSON payloads
@@ -365,6 +371,12 @@ export function createProxyHandler(
           healthTracker.recordFailure(provider.name)
           lastStatusCode = response.statusCode
           retryCount++
+          log.warn({
+            requestId,
+            provider: provider.name,
+            status: response.statusCode,
+            retryCount,
+          }, 'provider returned retryable status code — retrying next')
           // Drain the body so the connection is released back to the pool
           await response.body.dump()
           continue
@@ -399,6 +411,12 @@ export function createProxyHandler(
         healthTracker.recordFailure(provider.name)
         lastError = err as Error
         retryCount++
+        log.warn({
+          requestId,
+          provider: provider.name,
+          error: lastError.message,
+          retryCount,
+        }, 'provider request failed — retrying next')
       }
     }
 

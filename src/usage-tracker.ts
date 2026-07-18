@@ -3,26 +3,50 @@ import { resolve } from 'path'
 import type { UsageRecord, DailySummary, ProviderDailyStats } from './types.js'
 
 // ---------------------------------------------------------------------------
-// Anthropic pricing table (USD per 1M tokens).
-// Keys are prefix-matched against the model name returned by the API.
+// Anthropic pricing table (USD per 1M tokens), per the official pricing model:
+// https://platform.claude.com/docs/en/about-claude/pricing
+//   - cacheRead  = 0.1x base input price (cache hits & refreshes)
+//   - cacheWrite = 1.25x base input price (5-minute TTL cache writes, the API
+//     default; 1-hour TTL writes bill at 2x base input and are not
+//     distinguishable from the usage payload, so 5m rates are assumed)
+// Keys are prefix-matched against the model name returned by the API —
+// more specific prefixes MUST come before shorter ones.
 // Update this table when Anthropic changes prices.
 // ---------------------------------------------------------------------------
 interface ModelPricing {
   input: number        // per 1M input tokens
   output: number       // per 1M output tokens
   cacheRead: number    // per 1M cache-read tokens
-  cacheWrite: number   // per 1M cache-creation tokens
+  cacheWrite: number   // per 1M cache-creation tokens (5m TTL)
 }
 
 const PRICING: Array<{ prefix: string; pricing: ModelPricing }> = [
+  // Frontier tier
+  { prefix: 'claude-fable-5',   pricing: { input: 10.00, output: 50.00,  cacheRead: 1.00,  cacheWrite: 12.50 } },
+  { prefix: 'claude-mythos-5',  pricing: { input: 10.00, output: 50.00,  cacheRead: 1.00,  cacheWrite: 12.50 } },
+  // Opus 4.5–4.8: $5 / $25
+  { prefix: 'claude-opus-4-8',  pricing: { input:  5.00, output: 25.00,  cacheRead: 0.50,  cacheWrite:  6.25 } },
+  { prefix: 'claude-opus-4-7',  pricing: { input:  5.00, output: 25.00,  cacheRead: 0.50,  cacheWrite:  6.25 } },
+  { prefix: 'claude-opus-4-6',  pricing: { input:  5.00, output: 25.00,  cacheRead: 0.50,  cacheWrite:  6.25 } },
+  { prefix: 'claude-opus-4-5',  pricing: { input:  5.00, output: 25.00,  cacheRead: 0.50,  cacheWrite:  6.25 } },
+  // Opus 4.0 / 4.1 (legacy): $15 / $75 — fallback prefix must stay below the 4.5+ entries
   { prefix: 'claude-opus-4',    pricing: { input: 15.00, output: 75.00,  cacheRead: 1.50,  cacheWrite: 18.75 } },
   { prefix: 'claude-opus-3',    pricing: { input: 15.00, output: 75.00,  cacheRead: 1.50,  cacheWrite: 18.75 } },
+  { prefix: 'claude-3-opus',    pricing: { input: 15.00, output: 75.00,  cacheRead: 1.50,  cacheWrite: 18.75 } },
+  // Sonnet 5: introductory $2 / $10 through 2026-08-31; change to $3 / $15
+  // (cacheRead 0.30, cacheWrite 3.75) starting 2026-09-01
+  { prefix: 'claude-sonnet-5',  pricing: { input:  2.00, output: 10.00,  cacheRead: 0.20,  cacheWrite:  2.50 } },
   { prefix: 'claude-sonnet-4',  pricing: { input:  3.00, output: 15.00,  cacheRead: 0.30,  cacheWrite:  3.75 } },
   { prefix: 'claude-sonnet-3-5',pricing: { input:  3.00, output: 15.00,  cacheRead: 0.30,  cacheWrite:  3.75 } },
+  { prefix: 'claude-3-5-sonnet',pricing: { input:  3.00, output: 15.00,  cacheRead: 0.30,  cacheWrite:  3.75 } },
+  { prefix: 'claude-haiku-4-5', pricing: { input:  1.00, output:  5.00,  cacheRead: 0.10,  cacheWrite:  1.25 } },
   { prefix: 'claude-haiku-3-5', pricing: { input:  0.80, output:  4.00,  cacheRead: 0.08,  cacheWrite:  1.00 } },
+  { prefix: 'claude-3-5-haiku', pricing: { input:  0.80, output:  4.00,  cacheRead: 0.08,  cacheWrite:  1.00 } },
   { prefix: 'claude-haiku-3',   pricing: { input:  0.25, output:  1.25,  cacheRead: 0.03,  cacheWrite:  0.30 } },
+  { prefix: 'claude-3-haiku',   pricing: { input:  0.25, output:  1.25,  cacheRead: 0.03,  cacheWrite:  0.30 } },
 ]
 
+// Unknown models fall back to Sonnet-tier standard pricing
 const DEFAULT_PRICING: ModelPricing = { input: 3.00, output: 15.00, cacheRead: 0.30, cacheWrite: 3.75 }
 
 function getPricing(model: string): ModelPricing {

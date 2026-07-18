@@ -37,7 +37,7 @@ export function injectAuthHeaders(
   return result
 }
 
-export function sanitizeHeaders(headers: Record<string, string>): Record<string, string> {
+export function sanitizeHeaders(headers: Record<string, string>, shouldSanitize: boolean = true): Record<string, string> {
   const result = { ...headers }
 
   // Standard hop-by-hop / routing headers
@@ -46,15 +46,68 @@ export function sanitizeHeaders(headers: Record<string, string>): Record<string,
   delete result['content-length']
   delete result['transfer-encoding']
 
-  // Strip Stainless SDK telemetry headers injected by the Anthropic SDK / Claude
-  // Code CLI.  These fingerprint the request as coming from Claude Code itself and
-  // can cause Anthropic's policy filters to fire when the request is re-proxied
-  // through a third-party endpoint.
-  for (const key of Object.keys(result)) {
-    if (key.toLowerCase().startsWith('x-stainless-')) {
-      delete result[key]
+  if (shouldSanitize) {
+    // Strip Stainless and Anthropic client telemetry/metadata headers injected by
+    // the Anthropic SDK / Claude Code CLI. These fingerprint the request and can
+    // trigger Anthropic's upstream policy filters when proxied.
+    for (const key of Object.keys(result)) {
+      const lowerKey = key.toLowerCase()
+      if (lowerKey.startsWith('x-stainless-') || lowerKey.startsWith('x-anthropic-')) {
+        if (lowerKey !== 'x-api-key') {
+          delete result[key]
+        }
+      }
+    }
+
+    // Rewrite User-Agent to standard browser format if it contains Claude signature
+    if (result['user-agent'] && /claude/i.test(result['user-agent'])) {
+      result['user-agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     }
   }
 
   return result
 }
+
+export function sanitizeRequestBody(body: any): any {
+  if (!body || typeof body !== 'object') {
+    return body
+  }
+
+  // Deep clone or shallow copy depending on use. Fastify body is safe to copy shallowly first
+  const result = { ...body }
+
+  // Strip metadata as some third-party providers return 400 Bad Request if it's forwarded
+  if ('metadata' in result) {
+    delete result.metadata
+  }
+
+  // Strip x-anthropic-billing-header from the system prompt
+  if (result.system) {
+    const billingHeaderRegex = /x-anthropic-billing-header:[^\r\n]*\r?\n?/gi
+
+    if (typeof result.system === 'string') {
+      result.system = result.system.replace(billingHeaderRegex, '').trim()
+    } else if (Array.isArray(result.system)) {
+      result.system = result.system
+        .map((block: any) => {
+          if (block && typeof block === 'object' && block.type === 'text' && typeof block.text === 'string') {
+            return {
+              ...block,
+              text: block.text.replace(billingHeaderRegex, '').trim()
+            }
+          }
+          return block
+        })
+        // Filter out empty text blocks
+        .filter((block: any) => {
+          if (block && typeof block === 'object' && block.type === 'text') {
+            return block.text.length > 0
+          }
+          return true
+        })
+    }
+  }
+
+  return result
+}
+

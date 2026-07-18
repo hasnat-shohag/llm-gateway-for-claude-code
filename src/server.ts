@@ -33,6 +33,14 @@ export function createServer(
     }
   )
 
+  // Claude Code probes `HEAD /` at startup to test connectivity. Answer it
+  // locally (Fastify auto-exposes HEAD for GET routes) — proxying the probe to
+  // providers returns their Cloudflare error pages (305/403), which the client
+  // can't parse and surfaces as "API Error: Failed to parse JSON".
+  app.get('/', async () => {
+    return { status: 'ok' }
+  })
+
   app.get('/health', async () => {
     return { status: 'ok' }
   })

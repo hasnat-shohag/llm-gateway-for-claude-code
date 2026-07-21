@@ -107,13 +107,19 @@ function forwardHeaders(
 function createUsageInterceptor(
   provider: string,
   usageTracker: UsageTracker,
-  log: ReturnType<typeof createLogger>
+  log: ReturnType<typeof createLogger>,
+  requestedModel?: string
 ): Transform {
   let inputTokens = 0
   let outputTokens = 0
   let cacheReadTokens = 0
   let cacheWriteTokens = 0
-  let model = 'unknown'
+  // Prefer the model the CLIENT requested for pricing/recording. Some upstream
+  // proxies (e.g. freemodel) substitute their own model name in the SSE
+  // message_start (claude-fable-5), which mis-prices the call — the provider
+  // still bills the requested model. Fall back to the SSE model only when the
+  // request body carried none.
+  let model = requestedModel || 'unknown'
   // Buffer incomplete SSE lines across chunk boundaries
   let lineBuffer = ''
 
@@ -149,7 +155,9 @@ function createUsageInterceptor(
       const obj = JSON.parse(raw) as Record<string, unknown>
       if (obj.type === 'message_start') {
         const msg = obj.message as Record<string, unknown> | undefined
-        if (msg?.model) model = String(msg.model)
+        // Only trust the SSE model when the client didn't specify one — some
+        // upstream proxies substitute their own model name here (see above).
+        if (msg?.model && !requestedModel) model = String(msg.model)
         const usage = msg?.usage as Record<string, number> | undefined
         if (usage) {
           inputTokens       += usage.input_tokens                ?? 0
@@ -372,7 +380,8 @@ export function createProxyHandler(
           peeked.stream.on('error', swallowStreamError)
 
           if (usageTracker && ct.includes('text/event-stream')) {
-            const interceptor = createUsageInterceptor(provider.name, usageTracker, log)
+            const requestedModel = (req.body as { model?: string } | undefined)?.model
+            const interceptor = createUsageInterceptor(provider.name, usageTracker, log, requestedModel)
             interceptor.on('error', swallowStreamError)
             return reply.send(peeked.stream.pipe(interceptor))
           }

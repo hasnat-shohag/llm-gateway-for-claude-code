@@ -58,6 +58,8 @@ async function peekBody(
   )
   // Propagate downstream errors so callers/pipe consumers see the abort.
   body.on('error', (err) => replay.destroy(err))
+  // Prevent uncaught 'error' events on replay if no consumer has attached yet.
+  replay.on('error', () => {})
 
   return { empty: false, firstChunk, stream: replay }
 }
@@ -359,8 +361,19 @@ export function createProxyHandler(
           // looks like an SSE stream (text/event-stream).  For all other
           // content types (e.g. plain JSON) pipe through unchanged — we can
           // add JSON-mode parsing later if needed.
+          // Swallow upstream EOF / parse errors so they don't bubble up as
+          // unhandled 'error' events and crash the process after the response
+          // has already been committed to the client.
+          const swallowStreamError = (err: Error) => {
+            log.warn({ requestId, provider: provider.name, err: err.message },
+              'upstream stream error after response committed (ignored)')
+          }
+          ;(response.body as unknown as Readable).on('error', swallowStreamError)
+          peeked.stream.on('error', swallowStreamError)
+
           if (usageTracker && ct.includes('text/event-stream')) {
             const interceptor = createUsageInterceptor(provider.name, usageTracker, log)
+            interceptor.on('error', swallowStreamError)
             return reply.send(peeked.stream.pipe(interceptor))
           }
 
@@ -405,6 +418,11 @@ export function createProxyHandler(
 
         reply.code(response.statusCode)
         forwardHeaders(reply, response.headers)
+        // Swallow errors on the body stream for non-retryable forwards too.
+        ;(response.body as unknown as Readable).on('error', (err: Error) => {
+          log.warn({ requestId, provider: provider.name, err: err.message },
+            'upstream body stream error on non-retryable forward (ignored)')
+        })
         return reply.send(response.body)
 
       } catch (err) {

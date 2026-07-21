@@ -26,6 +26,24 @@ process.on('exit', () => usageTracker.close())
 process.on('SIGINT',  () => { usageTracker.close(); process.exit(0) })
 process.on('SIGTERM', () => { usageTracker.close(); process.exit(0) })
 
+// Last-resort safety net: undici can emit HTTPParserError on stream objects
+// after the response has already been sent to the client (e.g. "Invalid EOF
+// state" when the upstream TLS connection drops unexpectedly).  Individual
+// stream error handlers in proxy.ts should catch these first, but if one ever
+// escapes we log it as a warning and keep running instead of crashing.
+process.on('uncaughtException', (err: Error) => {
+  const name = err.constructor?.name ?? ''
+  if (name === 'HTTPParserError' || name.includes('ParseError')) {
+    log.warn({ err: err.message, code: (err as any).code },
+      'HTTPParserError swallowed by process-level handler — upstream connection dropped unexpectedly')
+    return   // swallow — server stays up
+  }
+  // Anything else is a real bug; re-throw so the process exits normally.
+  log.error({ err }, 'uncaught exception — shutting down')
+  usageTracker.close()
+  process.exit(1)
+})
+
 watchProviders('providers.json', (newProviders) => {
   providers = newProviders
   ;(app as any).updateProviders(newProviders)

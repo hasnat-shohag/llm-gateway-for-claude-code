@@ -124,7 +124,14 @@ function createUsageInterceptor(
   // Buffer incomplete SSE lines across chunk boundaries
   let lineBuffer = ''
 
+  // Guard: a stream must be recorded at most once, and only on clean
+  // completion. A truncated/aborted stream (error) is a FAILED delivery — the
+  // client got a malformed response and health tracking penalizes the
+  // provider — so it must NOT contribute cost to the DB.
+  let recorded = false
   const flush = () => {
+    if (recorded) return
+    recorded = true
     if (inputTokens === 0 && outputTokens === 0) return   // nothing to record
     try {
       const now = new Date()
@@ -198,8 +205,11 @@ function createUsageInterceptor(
     },
   })
 
-  // Also catch stream errors so tokens are still saved on abrupt close
-  transform.on('error', () => flush())
+  // NOTE: intentionally NO 'error' handler that records usage. The Transform's
+  // flush() callback fires only on clean completion; a stream destroyed by an
+  // upstream error skips it, so a failed/truncated call records zero cost.
+  // (An empty error listener is attached at the call site to keep the process
+  // from crashing on the unhandled 'error' event.)
 
   return transform
 }

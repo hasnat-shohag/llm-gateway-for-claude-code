@@ -342,7 +342,12 @@ export function createProxyHandler(
             continue
           }
 
-          healthTracker.recordSuccess(provider.name)
+          // NOTE: health success is recorded on clean stream *completion*, not
+          // here at commit time. A provider can commit a 200 and then truncate
+          // the SSE body mid-flight; recording success eagerly would reset the
+          // failure counter every request and mask a chronically-truncating
+          // provider so it never trips the health threshold. See the stream
+          // 'end'/'error' handlers below.
           const latency = Date.now() - startTime
           if (stats) {
             stats.total++
@@ -372,12 +377,33 @@ export function createProxyHandler(
           // Swallow upstream EOF / parse errors so they don't bubble up as
           // unhandled 'error' events and crash the process after the response
           // has already been committed to the client.
+          // Settle provider health exactly once, based on how the stream ends:
+          //   clean 'end'  → recordSuccess (resets failure counter)
+          //   'error'      → recordFailure (truncated/aborted mid-stream)
+          // Guarded so the two signals can't both fire (or fire twice).
+          let settled = false
+          const settleSuccess = () => {
+            if (settled) return
+            settled = true
+            healthTracker.recordSuccess(provider.name)
+          }
           const swallowStreamError = (err: Error) => {
+            // Penalize the provider: a stream that dies after we committed 200
+            // leaves the client with a truncated (malformed) response. Enough
+            // consecutive truncations cool the provider down so retries route
+            // around it. A later clean completion resets the counter.
+            if (!settled) {
+              settled = true
+              healthTracker.recordFailure(provider.name)
+            }
             log.warn({ requestId, provider: provider.name, err: err.message },
-              'upstream stream error after response committed (ignored)')
+              'upstream stream error after response committed (ignored, provider penalized)')
           }
           ;(response.body as unknown as Readable).on('error', swallowStreamError)
           peeked.stream.on('error', swallowStreamError)
+          // 'end' fires when the client-facing source stream is fully consumed
+          // without error — the response reached the client intact.
+          peeked.stream.on('end', settleSuccess)
 
           if (usageTracker && ct.includes('text/event-stream')) {
             const requestedModel = (req.body as { model?: string } | undefined)?.model

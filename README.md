@@ -68,6 +68,12 @@ Notes:
 - The gateway watches the file and hot-reloads on change, no restart needed. If an edit produces invalid JSON or fails validation, the change is ignored and the previous provider list stays active.
 - The provider must expose an Anthropic-compatible API (e.g. `POST /v1/messages`), since the gateway forwards Claude Code's requests verbatim.
 
+#### Auto-learned sanitization
+
+Some upstreams **require** the untouched Claude Code headers/system prompt and reject sanitized requests (e.g. AgentRouter → `401 unauthorized client detected`); others **break on** those markers and need them scrubbed (e.g. FreeModel). There is no single correct default, and operators adding a provider can't be expected to know which it is — so there is no `sanitize` config field.
+
+The gateway learns it. It starts with sanitizing **on**, and if a request fails with a mismatch signature (`400`/`401`) it flips the mode, retries the **same** provider once, and remembers whichever mode produced a real success (in memory, per provider — re-learned after a restart at a cost of at most one request). Learned modes are visible at `GET /stats` under `sanitizeModes`.
+
 ### Environment Variables
 
 | Variable                  | Default   | Description                      |

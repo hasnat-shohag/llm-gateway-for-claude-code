@@ -5,6 +5,7 @@ import { HealthTracker } from './health.js'
 import { createProxyHandler } from './proxy.js'
 import { createLogger } from './logger.js'
 import { UsageTracker } from './usage-tracker.js'
+import { SanitizeLearner } from './sanitize-learner.js'
 
 export function createServer(
   config: GatewayConfig,
@@ -14,6 +15,7 @@ export function createServer(
 ) {
   const log = createLogger(config.logLevel, config.nodeEnv)
   const providerManager = new ProviderManager(providers, healthTracker, config.strategy)
+  const sanitizeLearner = new SanitizeLearner()
 
   const stats: RequestStats = {
     total: 0,
@@ -56,6 +58,7 @@ export function createServer(
       retries: stats.retries,
       averageLatency: Math.round(avgLatency),
       unhealthyProviders: healthTracker.getUnhealthy(),
+      sanitizeModes: sanitizeLearner.snapshot(),
     }
   })
 
@@ -101,7 +104,7 @@ export function createServer(
     return usageTracker.getDailyCost(req.params.date)
   })
 
-  app.all('/*', createProxyHandler(providerManager, healthTracker, config, stats, usageTracker))
+  app.all('/*', createProxyHandler(providerManager, healthTracker, config, stats, usageTracker, sanitizeLearner))
 
   app.setNotFoundHandler((_req, reply) => {
     reply.code(404).send({ error: 'not found' })

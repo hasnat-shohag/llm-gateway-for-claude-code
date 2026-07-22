@@ -12,7 +12,6 @@ export interface ProviderConfig {
   weight: number
   /** Defaults to 'x-api-key' if omitted */
   authStyle?: AuthStyle
-  sanitize?: boolean
 }
 
 export interface ProviderHealth {

@@ -10,7 +10,6 @@ const providerSchema = z.object({
   enabled: z.boolean(),
   weight: z.number().int().positive(),
   authStyle: z.enum(['x-api-key', 'bearer']).default('x-api-key'),
-  sanitize: z.boolean().optional(),
 })
 
 const envSchema = z.object({

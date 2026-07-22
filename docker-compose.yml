@@ -1,11 +1,16 @@
 services:
-  # Development: source is bind-mounted and node --watch / providers.json
-  # hot-reload picks up local changes without rebuilding the image.
+  # Development: source is bind-mounted; providers.json hot-reloads in-app via
+  # watchProviders. We deliberately DON'T use `node --watch`: it parks on an
+  # uncaught crash instead of exiting, which blocks Docker's restart policy from
+  # recovering the process. Plain `node` exits on crash so `restart` kicks in.
+  # (Code edits need a `docker compose restart gateway-dev` — --watch didn't
+  # reliably pick up bind-mount changes anyway.)
   gateway-dev:
     build:
       context: .
       target: dev
     image: llm-gateway:dev
+    command: ["node", "--import", "tsx", "src/index.ts"]
     env_file:
       - .env
     environment:

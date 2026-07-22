@@ -4,9 +4,10 @@ import { Transform, Readable } from 'stream'
 import { ProviderManager } from './provider-manager.js'
 import { HealthTracker } from './health.js'
 import type { GatewayConfig, RequestStats } from './types.js'
-import { generateRequestId, shouldRetry, removeAuthHeaders, sanitizeHeaders, sanitizeRequestBody } from './utils.js'
+import { generateRequestId, shouldRetry, removeAuthHeaders, sanitizeHeaders, sanitizeRequestBody, looksLikeSanitizeMismatch } from './utils.js'
 import { createLogger } from './logger.js'
 import { UsageTracker, calculateCost } from './usage-tracker.js'
+import { SanitizeLearner } from './sanitize-learner.js'
 
 // ---------------------------------------------------------------------------
 // Shared undici connection pool
@@ -208,7 +209,8 @@ export function createProxyHandler(
   healthTracker: HealthTracker,
   config: GatewayConfig,
   stats?: RequestStats,
-  usageTracker?: UsageTracker
+  usageTracker?: UsageTracker,
+  sanitizeLearner?: SanitizeLearner
 ) {
   const log = createLogger(config.logLevel, config.nodeEnv)
 
@@ -224,19 +226,31 @@ export function createProxyHandler(
     let lastError: Error | null = null
     let lastStatusCode = 500
 
-    // Keep trying providers until all have been attempted once.
-    // We ask the manager to exclude already-tried providers so the
-    // selection strategy doesn't keep handing back the same one.
-    while (attempted.size < providerManager.providerCount()) {
-      const provider = providerManager.selectExcluding(attempted)
-      if (!provider) break
-      attempted.add(provider.name)
+    // Outcome of a single upstream attempt (one provider, one sanitize mode):
+    //   done      — response already sent to the client; stop the whole handler
+    //   mismatch  — failed with a sanitize-mismatch signature (400/401); the
+    //               caller may flip the sanitize mode and retry the SAME provider
+    //   failover  — failed in a way that warrants trying the NEXT provider
+    //   error     — network/transport error; try the next provider
+    type AttemptResult =
+      | { outcome: 'done' }
+      | { outcome: 'mismatch'; statusCode: number }
+      | { outcome: 'failover'; statusCode: number }
+      | { outcome: 'error'; error: Error }
 
+    // Perform one upstream request to `provider` using the given sanitize mode.
+    // Terminal outcomes ('done') send the response and do their own stats/health
+    // bookkeeping; non-terminal outcomes drain the body and let the caller decide
+    // (flip vs. failover), so failure bookkeeping for those lives in the loop.
+    const attemptOnce = async (
+      provider: ReturnType<typeof providerManager.selectExcluding>,
+      shouldSanitize: boolean
+    ): Promise<AttemptResult> => {
+      if (!provider) return { outcome: 'failover', statusCode: lastStatusCode }
       try {
         const targetUrl = `${provider.baseUrl}${url}`
 
         // Build headers: strip auth + hop-by-hop, then inject provider key
-        const shouldSanitize = provider.sanitize !== false
         let headers = removeAuthHeaders(sanitizeHeaders(originalHeaders, shouldSanitize))
         headers['host'] = new URL(provider.baseUrl).host
 
@@ -300,13 +314,10 @@ export function createProxyHandler(
           // "empty or malformed response".  Detect and retry.
           const ct = (response.headers['content-type'] as string | undefined) ?? ''
           if (ct.includes('text/html')) {
-            healthTracker.recordFailure(provider.name)
-            lastStatusCode = response.statusCode
-            retryCount++
             log.warn({ requestId, provider: provider.name, contentType: ct },
               'provider returned HTML at 200 — retrying next provider')
             await response.body.dump()
-            continue
+            return { outcome: 'failover', statusCode: response.statusCode }
           }
 
           // Guard 2: peek the body before committing status + headers.
@@ -317,12 +328,9 @@ export function createProxyHandler(
           // the response to the client once we know real bytes exist.
           const peeked = await peekBody(response.body as unknown as Readable)
           if (peeked.empty) {
-            healthTracker.recordFailure(provider.name)
-            lastStatusCode = response.statusCode
-            retryCount++
             log.warn({ requestId, provider: provider.name },
               'provider returned 200 with empty/aborted body — retrying next provider')
-            continue
+            return { outcome: 'failover', statusCode: response.statusCode }
           }
 
           // Guard 3: first-bytes sniff.
@@ -332,15 +340,16 @@ export function createProxyHandler(
           // ("event:"/"data:").  '<' means HTML regardless of the header.
           const head = peeked.firstChunk.toString('utf8', 0, Math.min(64, peeked.firstChunk.length)).trimStart()
           if (head.startsWith('<')) {
-            healthTracker.recordFailure(provider.name)
-            lastStatusCode = response.statusCode
-            retryCount++
             log.warn({ requestId, provider: provider.name, head: head.slice(0, 40) },
               'provider returned HTML body at 200 — retrying next provider')
             peeked.stream.destroy()
             ;(response.body as unknown as Readable).destroy()
-            continue
+            return { outcome: 'failover', statusCode: response.statusCode }
           }
+
+          // Real success — remember the sanitize mode that worked so future
+          // requests to this provider skip the probe/flip entirely.
+          sanitizeLearner?.recordSuccess(provider.name, shouldSanitize)
 
           // NOTE: health success is recorded on clean stream *completion*, not
           // here at commit time. A provider can commit a 200 and then truncate
@@ -365,6 +374,7 @@ export function createProxyHandler(
             status: response.statusCode,
             latency,
             retryCount,
+            sanitize: shouldSanitize,
           }, 'request completed')
 
           reply.code(response.statusCode)
@@ -409,16 +419,24 @@ export function createProxyHandler(
             const requestedModel = (req.body as { model?: string } | undefined)?.model
             const interceptor = createUsageInterceptor(provider.name, usageTracker, log, requestedModel)
             interceptor.on('error', swallowStreamError)
-            return reply.send(peeked.stream.pipe(interceptor))
+            await reply.send(peeked.stream.pipe(interceptor))
+            return { outcome: 'done' }
           }
 
-          return reply.send(peeked.stream)
+          await reply.send(peeked.stream)
+          return { outcome: 'done' }
+        }
+
+        // Sanitize-mismatch signature (400/401): the provider likely rejected
+        // the request because of the sanitize mode (stripped fingerprint vs.
+        // forwarded markers). Signal the caller so it can flip and retry the
+        // same provider. Body is drained to release the pooled connection.
+        if (looksLikeSanitizeMismatch(response.statusCode)) {
+          await response.body.dump()
+          return { outcome: 'mismatch', statusCode: response.statusCode }
         }
 
         if (shouldRetry(response.statusCode)) {
-          healthTracker.recordFailure(provider.name)
-          lastStatusCode = response.statusCode
-          retryCount++
           log.warn({
             requestId,
             provider: provider.name,
@@ -427,7 +445,7 @@ export function createProxyHandler(
           }, 'provider returned retryable status code — retrying next')
           // Drain the body so the connection is released back to the pool
           await response.body.dump()
-          continue
+          return { outcome: 'failover', statusCode: response.statusCode }
         }
 
         // Non-retryable error — forward as-is
@@ -458,18 +476,71 @@ export function createProxyHandler(
           log.warn({ requestId, provider: provider.name, err: err.message },
             'upstream body stream error on non-retryable forward (ignored)')
         })
-        return reply.send(response.body)
-
+        await reply.send(response.body)
+        return { outcome: 'done' }
       } catch (err) {
-        healthTracker.recordFailure(provider.name)
-        lastError = err as Error
-        retryCount++
+        return { outcome: 'error', error: err as Error }
+      }
+    }
+
+    // Decide the sanitize mode(s) to try for a provider, in order:
+    //   - already learned  → the learned value only
+    //   - unlearned        → [default guess, flipped] so a mismatch can flip
+    //     once to discover the right mode
+    // The sanitize mode is always auto-learned; there is no per-provider config
+    // override (operators can't be expected to know the right value).
+    const modesFor = (provider: NonNullable<ReturnType<typeof providerManager.selectExcluding>>): boolean[] => {
+      if (!sanitizeLearner) return [SanitizeLearner.DEFAULT_MODE]
+      const guess = sanitizeLearner.modeFor(provider.name)
+      if (sanitizeLearner.isLearned(provider.name)) return [guess]
+      return [guess, !guess]
+    }
+
+    // Keep trying providers until all have been attempted once.
+    // We ask the manager to exclude already-tried providers so the
+    // selection strategy doesn't keep handing back the same one.
+    while (attempted.size < providerManager.providerCount()) {
+      const provider = providerManager.selectExcluding(attempted)
+      if (!provider) break
+      attempted.add(provider.name)
+
+      const modes = modesFor(provider)
+      let result: AttemptResult = { outcome: 'failover', statusCode: lastStatusCode }
+
+      for (let mi = 0; mi < modes.length; mi++) {
+        result = await attemptOnce(provider, modes[mi])
+
+        // A sanitize mismatch with another mode left → flip and retry the SAME
+        // provider (the whole point of auto-learning). No health penalty for the
+        // probe; the flipped attempt decides the provider's fate.
+        if (result.outcome === 'mismatch' && mi < modes.length - 1) {
+          log.warn({
+            requestId,
+            provider: provider.name,
+            status: result.statusCode,
+            from: modes[mi],
+            to: modes[mi + 1],
+          }, 'sanitize mismatch — flipping mode and retrying same provider')
+          continue
+        }
+        break
+      }
+
+      if (result.outcome === 'done') return
+
+      // Non-terminal: record the failure for failover bookkeeping and move on.
+      healthTracker.recordFailure(provider.name)
+      retryCount++
+      if (result.outcome === 'error') {
+        lastError = result.error
         log.warn({
           requestId,
           provider: provider.name,
           error: lastError.message,
           retryCount,
         }, 'provider request failed — retrying next')
+      } else {
+        lastStatusCode = result.statusCode
       }
     }
 

@@ -16,6 +16,22 @@ export function shouldRetry(statusCode: number): boolean {
   ].includes(statusCode)
 }
 
+/**
+ * Whether an upstream status code looks like a *sanitization mismatch* — i.e.
+ * the provider rejected the request because it was sanitized when it shouldn't
+ * be, or unsanitized when it should be. These are the signatures worth flipping
+ * the sanitize mode and retrying the same provider for:
+ *   401 — client-fingerprint rejection (AgentRouter: "unauthorized client
+ *         detected" when Claude Code markers were stripped)
+ *   400 — bad-request from forwarding fields/markers a provider can't accept
+ * Other retryable codes (402 quota, 403 tier, 429, 5xx, Cloudflare) are NOT
+ * mismatches — flipping sanitize won't fix them, so we let normal failover
+ * handle those instead of wasting a same-provider retry.
+ */
+export function looksLikeSanitizeMismatch(statusCode: number): boolean {
+  return statusCode === 400 || statusCode === 401
+}
+
 export function removeAuthHeaders(headers: Record<string, string>): Record<string, string> {
   const result = { ...headers }
   delete result['authorization']

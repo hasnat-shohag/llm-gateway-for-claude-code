@@ -16,6 +16,14 @@ export function createServer(
   const log = createLogger(config.logLevel, config.nodeEnv)
   const providerManager = new ProviderManager(providers, healthTracker, config.strategy)
   const sanitizeLearner = new SanitizeLearner()
+  // Pin providers whose sanitize mode is explicitly set in providers.json.
+  // Pinned providers are treated as already-learned — the auto-flip probe is
+  // skipped entirely and the configured value is used unconditionally.
+  for (const p of providers) {
+    if (typeof p.sanitize === 'boolean') {
+      sanitizeLearner.pin(p.name, p.sanitize)
+    }
+  }
 
   const stats: RequestStats = {
     total: 0,

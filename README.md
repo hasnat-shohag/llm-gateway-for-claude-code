@@ -4,14 +4,13 @@ A local HTTP proxy gateway that sits between Claude Code and multiple Anthropic-
 
 ## Requirements
 
-- Node.js >= 22
+- Docker with Compose
 
 ## Installation
 
 ```bash
 git clone <repo-url>
 cd llm-gateway
-npm install
 ```
 
 ## Configuration
@@ -96,22 +95,7 @@ The gateway learns it. It starts with sanitizing **on**, and if a request fails 
 
 ## Running
 
-### Development
-
-```bash
-npm run dev
-```
-
-### Production
-
-```bash
-npm run build
-npm start
-```
-
-### Docker
-
-**Recommended: use Docker Compose** (handles build tools, volumes, and restart policy automatically):
+The gateway runs with Docker Compose. It handles build tools, volumes, and the restart policy automatically.
 
 ```bash
 # Development (live-reload, source bind-mounted)
@@ -121,26 +105,15 @@ docker compose up -d --build
 docker compose --profile prod up -d --build
 ```
 
-> **Upgrading the image?** If you're upgrading from an older image that didn't install `better-sqlite3`, the container's `node_modules` anonymous volume may be stale. Run this once to wipe it and start fresh:
+Stop it with `docker compose down` (add `--profile prod` for the production service).
+
+To update providers at runtime, edit `providers.json` — the gateway hot-reloads automatically, no container restart needed.
+
+> **Upgrading the image?** If you're upgrading from an older image that didn't install `better-sqlite3`, the container's `node_modules` anonymous volume may be stale. Wipe it once and start fresh:
 > ```bash
-> docker compose down -v && docker compose up -d
+> docker compose down -v && docker compose up -d --build
 > ```
 > The `usage-data` named volume (your token history) is preserved — only the `node_modules` anonymous volume is removed.
-
-**Manual `docker run`** (if not using Compose):
-
-```bash
-docker build --target dev -t llm-gateway:dev .
-docker run -d \
-  --name llm-gateway \
-  -p 8080:8080 \
-  -v $(pwd)/providers.json:/app/providers.json \
-  -v llm-gateway-usage:/app/data \
-  --env-file .env \
-  llm-gateway:dev
-```
-
-To update providers at runtime, edit the mounted `providers.json` — the gateway hot-reloads automatically without a container restart.
 
 ## Adding Providers
 

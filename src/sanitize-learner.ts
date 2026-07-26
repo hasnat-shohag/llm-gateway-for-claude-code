@@ -16,9 +16,20 @@
  */
 export class SanitizeLearner {
   private learned: Map<string, boolean> = new Map()
+  /** Providers with an explicit sanitize value from config — never auto-flipped. */
+  private pinned: Map<string, boolean> = new Map()
 
   /** The default mode to try first when nothing has been learned yet. */
   static readonly DEFAULT_MODE = true
+
+  /**
+   * Pin a provider to an explicit sanitize mode supplied from config.
+   * Pinned providers are treated as already-learned and are never flipped.
+   */
+  pin(providerName: string, mode: boolean) {
+    this.pinned.set(providerName, mode)
+    this.learned.set(providerName, mode)
+  }
 
   /** Learned mode for a provider, or the default guess if not yet learned. */
   modeFor(providerName: string): boolean {
@@ -29,8 +40,12 @@ export class SanitizeLearner {
     return this.learned.has(providerName)
   }
 
-  /** Record the mode that produced a genuine success for this provider. */
+  /**
+   * Record the mode that produced a genuine success for this provider.
+   * No-op for pinned providers — their mode is fixed by config.
+   */
   recordSuccess(providerName: string, mode: boolean) {
+    if (this.pinned.has(providerName)) return
     this.learned.set(providerName, mode)
   }
 

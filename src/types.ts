@@ -12,6 +12,14 @@ export interface ProviderConfig {
   weight: number
   /** Defaults to 'x-api-key' if omitted */
   authStyle?: AuthStyle
+  /**
+   * Explicitly pin the sanitize mode for this provider.
+   * When set, the gateway uses this value without any auto-flip probing:
+   *   true  — strip Claude Code fingerprint headers/body markers (safe default for most proxies)
+   *   false — forward everything unchanged (required by providers that fingerprint the client, e.g. AgentRouter)
+   * Omit the field to let the gateway auto-learn the correct mode.
+   */
+  sanitize?: boolean
 }
 
 export interface ProviderHealth {

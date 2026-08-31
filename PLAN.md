@@ -1,10 +1,11 @@
 # Desktop app — plan
 
-The desktop app is a manager for the gateway that already lives in `../src`. It exists so the
-gateway can be operated by someone who does not want to run `docker compose`, hand-edit
+The desktop app is a manager for the gateway whose source is vendored into `gateway-src/`. It exists
+so the gateway can be operated by someone who does not want to run `docker compose`, hand-edit
 `providers.json`, or read `~/.claude/settings.json`. The gateway itself is unchanged: the app
 compiles the same TypeScript source, runs it as a child process, and talks to its existing
-read-only HTTP endpoints.
+read-only HTTP endpoints. `gateway-src/VENDOR.md` records which upstream commit the copy came from
+and how to refresh it.
 
 ## Goals
 
@@ -57,7 +58,8 @@ renderer/ (vanilla ESM, no framework, no build step)
 └── dom.js               element helper, modal, formatters
 ```
 
-The gateway is compiled by `tsconfig.gateway.json` into `build/gateway/`, and
+The gateway is compiled by `tsconfig.gateway.json` (which extends the repository's `tsconfig.json`,
+holding the compiler options mirrored from upstream) out of `gateway-src/` into `build/gateway/`, and
 `scripts/finalize-gateway-build.js` drops a nested `package.json` marking that subtree as ESM —
 the app is CommonJS, so without it Node would resolve the gateway's `.js` files as CJS and fail
 on the first `import`.

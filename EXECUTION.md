@@ -1,23 +1,28 @@
 # Desktop app — execution log
 
-State of the `desktop/` app as verified on 2026-08-30, on Ubuntu (GNOME/Wayland, x64, Node 22).
-`PLAN.md` covers what it is and where it is going; this file covers what has actually been run,
-what the packaging constraints turned out to be, and what is still unproven.
+State of the app as verified on Ubuntu (GNOME/Wayland, x64, Node 22). `PLAN.md` covers what it is
+and where it is going; this file covers what has actually been run, what the packaging constraints
+turned out to be, and what is still unproven.
+
+Rows marked *(2026-08-31)* were re-run after the gateway source was vendored into `gateway-src/` and
+the repository became standalone; the rest were verified on 2026-08-30 against the previous layout,
+where the app lived in `desktop/` inside the gateway repository and compiled `../src`.
 
 ## What was verified
 
 | Check | Command | Result |
 | --- | --- | --- |
-| Gateway typecheck | `npm run typecheck` (repo root) | clean |
-| Gateway tests | `npm test` (repo root) | 3 files, 3 pass |
-| Gateway compiles for the app | `desktop/ npm run build:gateway` | `build/gateway/` + ESM marker written |
-| Desktop main-process tests | `desktop/ npm test` | 59 tests, 58 pass, 1 skipped (a non-Linux-only case) |
-| Icon generation | `desktop/ npm run gen:icon` | `build-resources/icon.png`, 1024×1024 RGBA |
-| Packaging (AppImage) | `desktop/ npm run dist` | `release/LLM Gateway-0.1.0.AppImage` (~124 MB) |
+| Gateway typecheck | `npm run typecheck` | clean *(2026-08-31)* |
+| Gateway compiles for the app | `npm run build:gateway` | `build/gateway/` + ESM marker written from `gateway-src/` *(2026-08-31)* |
+| Desktop main-process tests | `npm test` | 59 tests, 58 pass, 1 skipped (a non-Linux-only case) *(2026-08-31)* |
+| App launch | `npm start` | window + tray, renderer loaded, no errors *(2026-08-31)* |
+| Supervised gateway | `--user-data-dir=<tmp>` with `port: 8099`, then `curl 127.0.0.1:8099/health`, `/providers` | `{"status":"ok"}`, provider list served *(2026-08-31)* |
+| Port-conflict path | launch while another gateway holds 8080 | `[supervisor] port 8080 is already in use`, no restart loop *(2026-08-31)* |
+| Gateway's own unit tests | `npm test` in the upstream gateway repo | 3 files, 3 pass — `*.test.ts` is not vendored here |
+| Icon generation | `npm run gen:icon` | `build-resources/icon.png`, 1024×1024 RGBA |
+| Packaging (AppImage) | `npm run dist` | `release/LLM Gateway-0.1.0.AppImage` (~124 MB) |
 | Packaging (deb) | same run | **fails on this host**: fpm needs `ar` (`binutils`), which is not installed |
-| App launch | `desktop/ npm start` | window + tray, renderer loaded, no errors |
 | Packaged app launch | `release/linux-unpacked/llm-gateway --user-data-dir=<tmp>` | booted, supervised gateway answered `/health` on its configured port |
-| Supervised gateway | `curl 127.0.0.1:<port>/health`, `/providers` | `{"status":"ok"}`, provider list served |
 | First-run migration | — | repo-root `providers.json` copied into `userData` |
 | Own database | — | `userData/usage.db` created by the child, not the repo copy |
 | Clean shutdown | `SIGTERM` to the main process | child exited, port released, no orphan |
@@ -87,9 +92,12 @@ Four of these cost real time; all four are load-bearing.
 - `settings-store.js` coerces field-wise against its defaults, so an unrecognized patch value
   resets that field rather than keeping the previous one. Unreachable through IPC (which
   validates first), and the test documents it rather than treating it as a bug.
-- Two `providers.json` files exist once the app has run: the repo's (used by Docker) and
-  `userData/providers.json` (used by the app). They are copied once at first run and never
-  synced again.
+- The app has its own `providers.json` under `userData` and never shares one with anything else. A
+  `providers.json` at the repo root (or `GATEWAY_PROVIDERS_SEED`) is read exactly once, at first run,
+  to seed that copy — after which the two are never synced again. `providers.example.json` shows the
+  shape.
+- `gateway-src/` is a vendored copy, not a source of truth. Behavior changes belong upstream; see
+  `gateway-src/VENDOR.md`.
 - Everything the app writes lives under `~/.config/llm-gateway-desktop/` on Linux
   (`providers.json`, `providers.json.bak`, `settings.json`, `usage.db*`, `logs/gateway.log`).
   Deleting that directory is a clean factory reset.

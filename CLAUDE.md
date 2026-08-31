@@ -22,7 +22,7 @@ gateway is compiled.
 ```bash
 npm install          # postinstall runs electron-builder install-app-deps (native ABI rebuild)
 npm start            # build:gateway, then electron . --ozone-platform=x11
-npm test             # build:gateway, then node --test test/*.test.js (59 tests)
+npm test             # build:gateway, then node --test test/*.test.js (60 tests)
 npm run typecheck    # tsc --noEmit over gateway-src/
 npm run build:gateway  # tsc -p tsconfig.gateway.json + the ESM marker script
 npm run dist         # deb + AppImage into release/
@@ -68,9 +68,19 @@ access.
 - `ipc.js` — the named channels, re-validating every payload.
 
 **Renderer** (`renderer/`): plain functions over a single shared `state` object. `store.js` owns one
-poll loop for every view, paused while the window is hidden. `app.js` does tab routing and the status
-bar; `providers.js` / `dashboard.js` / `settings.js` are the three tabs; `charts.js` renders inline
-SVG; `dom.js` is the element helper.
+poll loop for every view, paused while the window is hidden. `app.js` owns the frameless titlebar, tab
+routing, the banner, and the status bar; `providers.js` / `dashboard.js` / `settings.js` are the three
+tabs; `onboarding.js` replaces all three on first run; `charts.js` renders inline SVG; `icons.js` is
+the authored 16px icon set; `dom.js` is the element helper.
+
+- `main/theme.js` — the whole theming mechanism is `nativeTheme.themeSource`. The stylesheet has one
+  `:root` block and one `prefers-color-scheme` media query, no `[data-theme]` selector, so a stored
+  `light` / `dark` preference works by making Chromium lie about the OS preference.
+- Charts measure their container and draw at 1:1 through one shared `ResizeObserver`, rather than
+  scaling a fixed `viewBox` — a scaled viewBox scales the 10px tick text with it.
+- `scripts/cdp-shot.js` screenshots the running window over CDP, for looking at the real renderer with
+  real data in it: `node scripts/cdp-shot.js <ws-url> <out.png> [tab] [dark|light|system] [scrollY]`.
+  Tab ids are `providers`, `dashboard`, `settings` — the labels read Providers / Usage / Setup.
 
 **Build pipeline:** `tsconfig.json` holds the compiler options mirrored from upstream (ESM,
 `moduleResolution: bundler`, `verbatimModuleSyntax` — which is why `gateway-src` imports carry `.js`
@@ -99,6 +109,10 @@ Each of these prevents a specific failure that produces no error message.
 | `preload.js` exposes named channels, never a generic `invoke` | `preload/preload.js` | The preload boundary is not a trust boundary — `ipc.js` re-validates anyway. |
 | `strategy` and `logLevel` need a gateway restart | `ipc.js` (`settings:update`) | Both are read from env at fork time. |
 | Do not edit `gateway-src/` to change gateway behavior | `gateway-src/VENDOR.md` | Fix it upstream and re-copy, or the schema-reuse invariant above becomes a lie. |
+| Every element hidden by the `hidden` attribute needs its own `[hidden] { display: none }` rule | `styles.css` | Any author `display` beats the UA sheet, so `.tabs`, `.field`, `.view`, `.banner`, `.notice` each opt out explicitly. Without it the element stays on screen with no error anywhere. |
+| No inline `style=""` in the renderer | `index.html` CSP | `style-src 'self'` with no `'unsafe-inline'`. Runtime colors go through `style.setProperty` (CSSOM) or SVG presentation attributes. |
+| `ResizeObserver` hosts must be unobserved when detached | `charts.js` | `observe()` holds a strong reference and the dashboard rebuilds its charts on every 5 s tick, so a discarded host would never be collected. Detaching fires an observation, which is where the entry is dropped. |
+| `startPolling` ticks once before starting the interval | `store.js` | Otherwise every gateway-derived cell skeletons for a full interval after boot, and an occluded window (which the tick skips) never fills them in at all. |
 
 ## Platform and packaging constraints
 

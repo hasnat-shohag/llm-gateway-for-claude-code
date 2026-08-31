@@ -157,5 +157,7 @@ first-run migration source; see `providers.example.json` for the shape.
 
 ## Further reading
 
-`PLAN.md` — the design rationale and the roadmap. `EXECUTION.md` — what has actually been run and
-what is still unproven. `gateway-src/VENDOR.md` — how to refresh the vendored gateway.
+`ARCHITECTURE.md` — the full technical reference: process model, module map, request lifecycle,
+telemetry, packaging, runbook. `PLAN.md` — the design rationale and the roadmap. `EXECUTION.md` —
+what has actually been run and what is still unproven. `gateway-src/VENDOR.md` — how to refresh the
+vendored gateway.

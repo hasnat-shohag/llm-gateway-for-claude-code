@@ -73,7 +73,7 @@ These are the decisions that are easy to break with an innocent-looking edit.
 | `providers.json` is written **in place**, never temp-file-plus-rename | `providers-store.js` | The gateway's `fs.watch` binds to the inode; a rename makes hot reload go deaf. |
 | Validation uses the gateway's own zod schema, not a copy | `schema.js` | A rejected file is silently ignored by the gateway's watcher, so the UI would show state the gateway never adopted. |
 | Full API keys never leave the main process | `providers-store.js`, `preload.js` | The renderer only ever sees masks plus an `__UNCHANGED__` sentinel. |
-| No gateway credential is written when a Claude Code login exists | `claude-settings.js` | Setting `ANTHROPIC_AUTH_TOKEN` overrides the subscription and breaks the `passthrough` provider. |
+| No gateway credential is written when a login exists **and** an enabled `passthrough` provider can use it | `claude-settings.js` | Setting `ANTHROPIC_AUTH_TOKEN` overrides the subscription and breaks the `passthrough` provider — but with no passthrough provider enabled, omitting it makes Claude Code prompt for a login instead of using the gateway. |
 | Only our two keys in `~/.claude/settings.json` are touched, and only removed if they still hold the value we wrote | `claude-settings.js` | That file also holds permissions, hooks, and MCP config. |
 | The gateway runs as a child process, not in-process | `supervisor.js` | The gateway calls `process.exit(1)` on bad config or a failed listen; in-process that would kill the app. |
 | The renderer makes no network requests | `index.html` CSP, `gateway-client.js` | `connect-src 'none'` removes the CORS surface entirely; all data arrives over IPC. |

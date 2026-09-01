@@ -232,11 +232,23 @@ Rules encoded there:
 - **Merge, never replace.** That file also holds permissions, hooks, and MCP configuration.
 - **Touch only the two keys we own** (`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`), and remove one
   only if it still holds the value we wrote — so a hand-edited value is never silently discarded.
-- **Write no gateway credential when a Claude Code login exists.** The *absence* of
+- **Write no gateway credential when the subscription is the credential in play.** The *absence* of
   `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_API_KEY` is what keeps the subscription as the active
-  credential, which is what makes a `passthrough` provider work. Only when
-  `claudeAccount.detect()` reports `loggedIn === false` is the placeholder `llm-gateway-local`
-  written — recognisable, so "route off" knows it is safe to remove.
+  credential, which is what makes a `passthrough` provider work. That absence is only withheld when
+  something can actually use it: `claudeSettings.usesSubscription()` requires both a login
+  (`claudeAccount.detect()` not reporting `loggedIn === false`) **and** an enabled `passthrough`
+  provider (`providersStore.hasEnabledPassthrough()`, read straight off `providers.json` because
+  `plan()` is synchronous). Otherwise the placeholder `llm-gateway-local` is written —
+  recognisable, so "route off" knows it is safe to remove.
+
+  A login alone is not enough: Claude Code pointed at a custom `ANTHROPIC_BASE_URL` with nothing in
+  `env` runs its OAuth login flow rather than talking to the gateway, so withholding the placeholder
+  with no passthrough provider enabled costs a login prompt on every new session and buys nothing.
+  An unparseable `providers.json` reads as "yes, in use", because a false negative there would
+  overwrite a working subscription credential.
+- A **provider save rewrites the file** when routing is on (`ipc.js` → `providers:save`): enabling or
+  disabling a passthrough provider flips which side of the rule above applies. `apply(true)` is a
+  no-op when the plan holds no changes, so it only writes when that actually changed.
 - A **port change rewrites the file** when routing is on (`ipc.js` → `gateway:usePort`): the port is
   stored there as a literal, so moving the gateway would otherwise silently break Claude Code.
 
